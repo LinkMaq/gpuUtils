@@ -1,13 +1,16 @@
 import asyncio
 import json
-import random
 import time
-from typing import Dict
+from typing import Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+import dcgm_fields
+import DcgmPython
+import pynvml
 
-app = FastAPI(title="gpuUtils - mock backend")
+app = FastAPI(title="gpuUtils - NVIDIA DCGM backend")
 
 # 配置CORS
 app.add_middleware(
@@ -19,110 +22,106 @@ app.add_middleware(
 )
 
 
-class GPUState:
-    def __init__(self, index: int):
-        self.index = index
-        self.util = 0.0
-        self.mem_util = 0.0
-        self.temp = 35.0
-        self.fan = 0.0
-        self.power = 30.0
-        self.memory_total = 16384  # MB
-        self.memory_used = 0  # MB
-        self.clocks = {"graphics": 300, "memory": 405, "sm": 300}
-        # 新增网络/错误/PCIe指标
-        self.nvlink_bandwidth = 0.0  # GB/s
-        self.xid_errors = 0
-        self.pcie_tx = 0.0  # GB/s
-        self.pcie_rx = 0.0  # GB/s
+class DCGMManager:
+    def __init__(self):
+        # 初始化DCGM
+        self.dcgm_handle = DcgmPython.DcgmHandle()
+        self.dcgm_system = DcgmPython.DcgmSystem(self.dcgm_handle)
+        self.dcgm_system.Init()
 
-    def update(self):
-        # 根据GPU索引设置不同的行为模式
-        behavior = self.index % 4  # 将8个GPU分为4种不同的行为模式
+        # 初始化NVML
+        pynvml.nvmlInit()
         
-        # GPU利用率变化 - 不同的行为模式
-        if behavior == 0:  # 高负载模式
-            target = random.choice([70, 80, 90, 100])
-        elif behavior == 1:  # 中等负载模式
-            target = random.choice([40, 50, 60])
-        elif behavior == 2:  # 低负载模式
-            target = random.choice([10, 20, 30])
-        else:  # 空闲模式
-            target = random.choice([0, 5, 10])
-            
-        self.util = max(0, min(100, self.util + random.uniform(-10, 10) if abs(self.util - target) < 20 else (target - self.util) * 0.3))
+        # 获取所有GPU
+        self.gpu_ids = self.dcgm_system.discovery.GetAllGpuIds()
         
-        # 显存使用变化 - 根据行为模式调整
-        if random.random() < 0.1:  # 10%概率发生显存变化
-            if behavior == 0:  # 高内存使用
-                self.memory_used = max(12288, min(self.memory_total, self.memory_used + random.randint(-512, 1024)))
-            elif behavior == 1:  # 中等内存使用
-                self.memory_used = max(8192, min(12288, self.memory_used + random.randint(-512, 512)))
-            elif behavior == 2:  # 低内存使用
-                self.memory_used = max(2048, min(8192, self.memory_used + random.randint(-256, 256)))
-            else:  # 最小内存使用
-                self.memory_used = max(0, min(2048, self.memory_used + random.randint(-128, 128)))
+        # 创建GPU组
+        self.group_id = self.dcgm_system.group.CreateGroup("gpuUtilsGroup")
+        for gpu_id in self.gpu_ids:
+            self.dcgm_system.group.AddToGroup(self.group_id, gpu_id)
+
+        # 配置要监控的字段
+        self.fields = [
+            dcgm_fields.DCGM_FI_DEV_GPU_UTIL,            # GPU利用率
+            dcgm_fields.DCGM_FI_DEV_FB_USED,             # 显存使用量
+            dcgm_fields.DCGM_FI_DEV_FB_FREE,             # 可用显存
+            dcgm_fields.DCGM_FI_DEV_FB_TOTAL,            # 总显存
+            dcgm_fields.DCGM_FI_DEV_GPU_TEMP,            # GPU温度
+            dcgm_fields.DCGM_FI_DEV_POWER_USAGE,         # 功率使用
+            dcgm_fields.DCGM_FI_DEV_SM_CLOCK,            # SM时钟
+            dcgm_fields.DCGM_FI_DEV_MEM_CLOCK,           # 显存时钟
+            dcgm_fields.DCGM_FI_DEV_FAN_SPEED,           # 风扇速度
+            dcgm_fields.DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, # NVLink带宽
+            dcgm_fields.DCGM_FI_DEV_PCIE_TX_THROUGHPUT,  # PCIe发送吞吐量
+            dcgm_fields.DCGM_FI_DEV_PCIE_RX_THROUGHPUT,  # PCIe接收吞吐量
+            dcgm_fields.DCGM_FI_DEV_XID_ERRORS           # XID错误
+        ]
+        
+        # 配置监控参数
+        self.dcgm_system.config.SetWatchFields(
+            self.group_id,
+            self.fields,
+            update_freq=100000,  # 100ms更新频率
+            max_keep_age=0,      # 不保留历史数据
+            max_keep_samples=1    # 只保留最新样本
+        )
+
+    def get_gpu_info(self) -> List[Dict]:
+        try:
+            values = self.dcgm_system.status.GetLatestValues(self.group_id, self.fields)
+            metrics = []
+
+            for gpu_id in self.gpu_ids:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+                gpu_name = pynvml.nvmlDeviceGetName(handle).decode('utf-8')
+                gpu_info = values[gpu_id]
                 
-        self.mem_util = (self.memory_used / self.memory_total) * 100
+                metrics.append({
+                    "timestamp": time.time(),
+                    "gpu_index": gpu_id,
+                    "name": gpu_name,
+                    "gpu_util": gpu_info[dcgm_fields.DCGM_FI_DEV_GPU_UTIL].value,
+                    "mem_util": (gpu_info[dcgm_fields.DCGM_FI_DEV_FB_USED].value / 
+                                gpu_info[dcgm_fields.DCGM_FI_DEV_FB_TOTAL].value * 100),
+                    "memory": {
+                        "total": gpu_info[dcgm_fields.DCGM_FI_DEV_FB_TOTAL].value // (1024 * 1024),  # Convert to MB
+                        "used": gpu_info[dcgm_fields.DCGM_FI_DEV_FB_USED].value // (1024 * 1024),
+                        "free": gpu_info[dcgm_fields.DCGM_FI_DEV_FB_FREE].value // (1024 * 1024)
+                    },
+                    "temperature": gpu_info[dcgm_fields.DCGM_FI_DEV_GPU_TEMP].value,
+                    "fan_speed": gpu_info[dcgm_fields.DCGM_FI_DEV_FAN_SPEED].value,
+                    "power": gpu_info[dcgm_fields.DCGM_FI_DEV_POWER_USAGE].value / 1000.0,  # Convert to W
+                    "clocks": {
+                        "graphics": gpu_info[dcgm_fields.DCGM_FI_DEV_SM_CLOCK].value,
+                        "memory": gpu_info[dcgm_fields.DCGM_FI_DEV_MEM_CLOCK].value,
+                        "sm": gpu_info[dcgm_fields.DCGM_FI_DEV_SM_CLOCK].value
+                    },
+                    "nvlink_bandwidth": gpu_info[dcgm_fields.DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL].value / 1e9,  # Convert to GB/s
+                    "xid_errors": gpu_info[dcgm_fields.DCGM_FI_DEV_XID_ERRORS].value,
+                    "pcie_tx": gpu_info[dcgm_fields.DCGM_FI_DEV_PCIE_TX_THROUGHPUT].value / 1e9,  # Convert to GB/s
+                    "pcie_rx": gpu_info[dcgm_fields.DCGM_FI_DEV_PCIE_RX_THROUGHPUT].value / 1e9   # Convert to GB/s
+                })
+            return metrics
+        except Exception as e:
+            print(f"Error getting GPU metrics: {e}")
+            return []
 
-        # 温度变化
-        temp_impact = self.util * 0.5  # GPU使用率对温度的影响
-        self.temp = max(30, min(85, self.temp + random.uniform(-0.5, 0.5) + (temp_impact - self.temp) * 0.1))
-        
-        # 风扇速度根据温度调整
-        target_fan = max(0, (self.temp - 30) * 2)  # 30度以上开始调整风扇
-        self.fan = max(0, min(100, self.fan + (target_fan - self.fan) * 0.2))
-        
-        # 功率变化
-        base_power = 30  # 基础功耗
-        load_power = self.util * 2  # 负载功耗
-        self.power = base_power + load_power + random.uniform(-5, 5)
+    def __del__(self):
+        try:
+            self.dcgm_system.group.DestroyGroup(self.group_id)
+            pynvml.nvmlShutdown()
+        except:
+            pass
 
-        # 时钟频率调整
-        base_clock = 300
-        boost = (self.util / 100) * 1500  # 最大boost 1800MHz
-        self.clocks["graphics"] = int(base_clock + boost)
-        self.clocks["memory"] = int(405 + (self.util / 100) * 400)  # 内存频率变化
-        self.clocks["sm"] = self.clocks["graphics"]
-        # 模拟 nvlink / pcie / xid 统计
-        # nvlink 带宽根据利用率波动
-        self.nvlink_bandwidth = max(0.0, min(600.0, (self.util / 100) * 600 + random.uniform(-20, 20)))
-        # 随机产生 XID 错误（很小概率）
-        if random.random() < 0.01:
-            self.xid_errors += random.randint(1, 5)
-        # PCIe 传输随负载波动
-        self.pcie_tx = max(0.0, (self.util / 100) * 50 + random.uniform(-2, 2))
-        self.pcie_rx = max(0.0, (self.util / 100) * 50 + random.uniform(-2, 2))
+# 初始化DCGM管理器
+dcgm_manager = DCGMManager()
 
-gpu_states = {i: GPUState(i) for i in range(8)}  # 模拟8个GPU
+# 使用线程池执行GPU数据收集
+executor = ThreadPoolExecutor(max_workers=1)
 
-def make_mock_metrics(gpu_index: int = 0) -> Dict:
-    now = time.time()
-    gpu_state = gpu_states[gpu_index]
-    gpu_state.update()
-    
-    return {
-        "timestamp": now,
-        "gpu_index": gpu_index,
-        "name": f"NVIDIA A100-SXM4-80GB #{gpu_index}",
-        "gpu_util": round(gpu_state.util, 2),
-        "mem_util": round(gpu_state.mem_util, 2),
-        "memory": {
-            "total": gpu_state.memory_total,
-            "used": round(gpu_state.memory_used, 2),
-            "free": round(gpu_state.memory_total - gpu_state.memory_used, 2)
-        },
-        "temperature": round(gpu_state.temp, 1),
-        "fan_speed": round(gpu_state.fan, 1),
-        "power": round(gpu_state.power, 2),
-        "clocks": gpu_state.clocks,
-        "performance_state": "P0" if gpu_state.util > 50 else "P2"
-    ,
-        "nvlink_bandwidth": round(gpu_state.nvlink_bandwidth, 2),
-        "xid_errors": gpu_state.xid_errors,
-        "pcie_tx": round(gpu_state.pcie_tx, 2),
-        "pcie_rx": round(gpu_state.pcie_rx, 2)
-    }
+async def get_gpu_metrics() -> List[Dict]:
+    # 在线程池中执行GPU数据收集
+    return await asyncio.get_event_loop().run_in_executor(executor, dcgm_manager.get_gpu_info)
 
 
 @app.get("/health")
@@ -134,14 +133,14 @@ async def health():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
-        # simple loop sending mocked metrics for all GPUs until client disconnects
         while True:
-            # 发送所有GPU的数据
-            metrics_list = [make_mock_metrics(gpu_index=i) for i in range(8)]
-            await websocket.send_json({
-                "timestamp": time.time(),
-                "gpus": metrics_list
-            })
+            # 获取所有GPU的实时数据
+            metrics_list = await get_gpu_metrics()
+            if metrics_list:
+                await websocket.send_json({
+                    "timestamp": time.time(),
+                    "gpus": metrics_list
+                })
             # 每秒更新一次数据
             await asyncio.sleep(1.0)
     except WebSocketDisconnect:

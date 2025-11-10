@@ -1,23 +1,7 @@
-import React, { useEffect, useState, useRef, useMemo } from "react";
-import AppBar from '@mui/material/AppBar';
-import Toolbar from '@mui/material/Toolbar';
-import Typography from '@mui/material/Typography';
-import Box from '@mui/material/Box';
-
-import Card from '@mui/material/Card';
-import CardContent from '@mui/material/CardContent';
-import Button from '@mui/material/Button';
-import Paper from '@mui/material/Paper';
-import List from '@mui/material/List';
-import ListItem from '@mui/material/ListItem';
-import ListItemText from '@mui/material/ListItemText';
-import Checkbox from '@mui/material/Checkbox';
-import Divider from '@mui/material/Divider';
-import Accordion from '@mui/material/Accordion';
-import AccordionSummary from '@mui/material/AccordionSummary';
-import AccordionDetails from '@mui/material/AccordionDetails';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import Chip from '@mui/material/Chip';
+import React, { useEffect, useState, useRef } from "react";
+import { Layout, Typography, Button, Card, List, Checkbox, Divider, 
+         Collapse, Input, Space, message, Progress, Select } from 'antd';
+import { DownOutlined, ReloadOutlined, PoweroffOutlined } from '@ant-design/icons';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
 
 const getUtilColor = (util) => {
@@ -191,7 +175,8 @@ export default function App() {
                   }
                 } catch (e) {
                   console.warn('chart append error', e);
-                }              return next;
+                }              
+                return next;
             });
           } catch (e) {
             console.warn('invalid ws msg', e);
@@ -265,197 +250,266 @@ export default function App() {
   }, [selectedSet, activeMetric]);
 
   return (
-    <Box sx={{ flexGrow: 1, p: 2 }}>
-      <AppBar position="static">
-        <Toolbar>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            gpuUtils — Live GPU metrics (mock)
-          </Typography>
-          <Typography variant="body2" sx={{ mr: 2 }}>Pod: <strong>{podName}</strong></Typography>
-          <Button color={running ? 'error' : 'inherit'} variant={running ? 'contained' : 'outlined'} onClick={() => {
-            setRunning((r) => {
-              const next = !r;
-              if (next) {
-                if ((selectedSet?.size || 0) === 0) {
+    <Layout style={{ minHeight: '100vh' }}>
+      <Layout.Header style={{ background: '#fff', padding: '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Typography.Title level={4} style={{ margin: 0 }}>
+          gpuUtils — Live GPU metrics
+        </Typography.Title>
+        <Space>
+          <Typography.Text>Pod: <strong>{podName}</strong></Typography.Text>
+          <Button 
+            type={running ? 'primary' : 'default'}
+            danger={running}
+            icon={running ? <PoweroffOutlined /> : <PoweroffOutlined />}
+            onClick={() => {
+              setRunning((r) => {
+                const next = !r;
+                if (next && (selectedSet?.size || 0) === 0) {
                   const s = new Set([0]);
                   setSelectedSet(s);
                 }
-              }
-              return next;
-            });
-          }}>{running ? 'Stop' : 'Start'}</Button>
-          <Button sx={{ ml: 1 }} color="secondary" variant="outlined" onClick={() => { setSelectedSet(new Set()); setGpuData(null); setHistory({}); setChartDataMap({}); }}>Reset</Button>
-        </Toolbar>
-      </AppBar>
+                return next;
+              });
+            }}
+          >
+            {running ? 'Stop' : 'Start'}
+          </Button>
+          <Button 
+            icon={<ReloadOutlined />}
+            onClick={() => { 
+              setSelectedSet(new Set()); 
+              setGpuData(null); 
+              setHistory({}); 
+              setChartDataMap({}); 
+            }}
+          >
+            Reset
+          </Button>
+        </Space>
+      </Layout.Header>
 
-      <Box sx={{ mt: 2 }}>
-        <Accordion>
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>Connection (debug)</AccordionSummary>
-          <AccordionDetails>
-            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-              <select value={endpoint} onChange={(e) => setEndpoint(e.target.value)}>
-                {endpointCandidates.map((ep) => <option key={ep} value={ep}>{ep}</option>)}
-                <option key="manual" value={manualEndpoint || endpoint}>Manual...</option>
-              </select>
-              <input style={{ flex: '1 1 320px' }} placeholder="Or paste ws://host:8000/ws" value={manualEndpoint} onChange={(e) => setManualEndpoint(e.target.value)} />
-              <Button onClick={() => { if (manualEndpoint) setEndpoint(manualEndpoint); else setEndpoint(endpoint) }}>Connect</Button>
-              <Button onClick={() => { try { wsRef.current?.close(); } catch (e) {} }}>Disconnect</Button>
-            </Box>
-            <Box sx={{ mt: 1 }}>
-              <Typography variant="body2">Status: {connectionStatus}{lastError ? ` • ${lastError}` : ''}</Typography>
-            </Box>
-          </AccordionDetails>
-        </Accordion>
-      </Box>
+      <Layout.Content style={{ padding: '16px' }}>
+        <div>
+          <Collapse>
+            <Collapse.Panel header="Connection (debug)">
+              <Space.Compact style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <Select 
+                  value={endpoint}
+                  onChange={(value) => setEndpoint(value)}
+                  style={{ minWidth: '200px' }}
+                >
+                  {endpointCandidates.map((ep) => (
+                    <Select.Option key={ep} value={ep}>{ep}</Select.Option>
+                  ))}
+                  <Select.Option key="manual" value={manualEndpoint || endpoint}>Manual...</Select.Option>
+                </Select>
+                <Input 
+                  style={{ flex: '1 1 320px' }} 
+                  placeholder="Or paste ws://host:8000/ws" 
+                  value={manualEndpoint} 
+                  onChange={(e) => setManualEndpoint(e.target.value)} 
+                />
+                <Button onClick={() => { if (manualEndpoint) setEndpoint(manualEndpoint); else setEndpoint(endpoint) }}>
+                  Connect
+                </Button>
+                <Button onClick={() => { try { wsRef.current?.close(); } catch (e) {} }}>
+                  Disconnect
+                </Button>
+              </Space.Compact>
+              <div style={{ marginTop: '8px' }}>
+                <Typography.Text type="secondary">
+                  Status: {connectionStatus}{lastError ? ` • ${lastError}` : ''}
+                </Typography.Text>
+              </div>
+            </Collapse.Panel>
+          </Collapse>
+        </div>
 
-      <Box sx={{ mt: 2 }}>
-        {gpuData ? (
-          <>
-            <Box sx={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(8, 1fr)', 
-                gap: 2,
-                overflowX: 'auto',
-                '& > *': { minWidth: '260px' }
-              }}>
-              {gpuData.gpus.map((gpu) => (
-                <Box key={gpu.gpu_index} sx={{ position: 'relative' }}>
-                  <Card variant="outlined" onClick={() => {
-                    // toggle GPU selection for charting; also set selectedGpu for detailed view
-                    const s = new Set(selectedSet);
-                    if (s.has(gpu.gpu_index)) s.delete(gpu.gpu_index);
-                    else s.add(gpu.gpu_index);
-                    setSelectedSet(s);
+        <div style={{ marginTop: '16px' }}>
+          {gpuData ? (
+            <>
+              <div style={{ 
+                  display: 'flex', 
+                  flexWrap: 'nowrap', 
+                  gap: '16px',
+                  overflowX: 'auto',
+                  paddingBottom: '8px'
+                }}>
+                {gpuData.gpus.map((gpu) => (
+                  <div key={gpu.gpu_index} style={{ position: 'relative', flex: '0 0 260px' }}>
+                    <Card 
+                      hoverable
+                      onClick={() => {
+                        // toggle GPU selection for charting; also set selectedGpu for detailed view
+                        const s = new Set(selectedSet);
+                        if (s.has(gpu.gpu_index)) s.delete(gpu.gpu_index);
+                        else s.add(gpu.gpu_index);
+                        setSelectedSet(s);
+                      }} 
+                      style={{ 
+                        cursor: 'pointer',
+                        backgroundColor: selectedSet.has(gpu.gpu_index) ? '#f0f2f5' : 'white',
+                        transition: 'background-color 0.2s ease'
+                      }}
+                    >
+                      <div style={{ padding: '12px' }}>
+                        <Typography.Title level={5} style={{ margin: 0, fontSize: '14px' }}>{gpu.name}</Typography.Title>
+                        <div style={{ marginTop: '4px' }}>
+                          <Progress 
+                            percent={gpu.gpu_util} 
+                            size="small" 
+                            strokeColor={getUtilColor(gpu.gpu_util)}
+                            format={percent => `GPU: ${percent}%`}
+                            style={{ marginBottom: 0 }}
+                          />
+                        </div>
+                        <div style={{ marginTop: '4px' }}>
+                          <Progress 
+                            percent={gpu.mem_util} 
+                            size="small" 
+                            strokeColor={getUtilColor(gpu.mem_util)}
+                            format={percent => `MEM: ${percent}%`}
+                            style={{ marginBottom: 0 }}
+                          />
+                        </div>
+                        <Typography.Text type="secondary" style={{ marginTop: '4px', display: 'block', fontSize: '12px' }}>
+                          Temp: {gpu.temperature}°C
+                        </Typography.Text>
+                      </div>
+                    </Card>
+                  </div>
+                ))}
+              </div>
 
-                  }} sx={{ 
-                    cursor: 'pointer',
-                    backgroundColor: selectedSet.has(gpu.gpu_index) ? '#f3f4f6' : 'white',
-                    transition: 'background-color 0.2s ease'
-                  }}>
-                    <CardContent>
-                      <Typography variant="subtitle1">{gpu.name}</Typography>
-                      <Box sx={{ mt: 1 }}>
-                        <Box sx={{ height: 8, bgcolor: '#e5e7eb', borderRadius: 1, overflow: 'hidden' }}>
-                          <Box sx={{ width: `${gpu.gpu_util}%`, height: '100%', bgcolor: getUtilColor(gpu.gpu_util) }} />
-                        </Box>
-                        <Typography variant="caption">GPU: {gpu.gpu_util}%</Typography>
-                      </Box>
-                      <Box sx={{ mt: 1 }}>
-                        <Box sx={{ height: 8, bgcolor: '#e5e7eb', borderRadius: 1, overflow: 'hidden' }}>
-                          <Box sx={{ width: `${gpu.mem_util}%`, height: '100%', bgcolor: getUtilColor(gpu.mem_util) }} />
-                        </Box>
-                        <Typography variant="caption">MEM: {gpu.mem_util}%</Typography>
-                      </Box>
-                      <Typography variant="caption" display="block" sx={{ mt: 1 }}>Temp: {gpu.temperature}°C</Typography>
-                    </CardContent>
+              <div style={{ marginTop: '16px' }}>
+                <div style={{ 
+                  display: 'grid', 
+                  gridTemplateColumns: 'minmax(280px, 1fr) 3fr',
+                  gap: '16px', 
+                  alignItems: 'start' 
+                }}>
+                  <Card>
+                    <Typography.Title level={5} style={{ marginTop: 0 }}>监控项 (Metrics)</Typography.Title>
+                    <List
+                      size="small"
+                      dataSource={metricsCatalog}
+                      renderItem={(m) => (
+                        <List.Item>
+                          <Checkbox 
+                            checked={selectedMetrics.has(m.key)} 
+                            onChange={(e) => {
+                              const s = new Set(selectedMetrics);
+                              if (e.target.checked) s.add(m.key); else s.delete(m.key);
+                              setSelectedMetrics(s);
+                              if (!s.has(activeMetric) && s.size > 0) setActiveMetric([...s][0]);
+                            }}
+                          />
+                          <span style={{ marginLeft: '8px' }}>
+                            {m.label}
+                            <Typography.Text type="secondary" style={{ marginLeft: '8px' }}>
+                              (单位: {m.unit})
+                            </Typography.Text>
+                          </span>
+                        </List.Item>
+                      )}
+                    />
+                    <Divider style={{ margin: '8px 0' }} />
+                    <Typography.Text type="secondary">
+                      Selected GPUs: {Array.from(selectedSet).length} (点击卡片切换)
+                    </Typography.Text>
                   </Card>
-                </Box>
-              ))}
-            </Box>
 
-            <Box sx={{ mt: 2 }}>
-              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '280px 1fr' }, gap: 2, alignItems: 'start' }}>
-                <Paper sx={{ p: 2 }}>
-                  <Typography variant="h6">监控项 (Metrics)</Typography>
-                  <List>
-                    {metricsCatalog.map((m) => (
-                      <ListItem key={m.key} dense>
-                        <Checkbox edge="start" checked={selectedMetrics.has(m.key)} onChange={(e) => {
-                          const s = new Set(selectedMetrics);
-                          if (e.target.checked) s.add(m.key); else s.delete(m.key);
-                          setSelectedMetrics(s);
-                          if (!s.has(activeMetric) && s.size > 0) setActiveMetric([...s][0]);
-                        }} />
-                        <ListItemText primary={m.label} secondary={`单位: ${m.unit}`} />
-                      </ListItem>
-                    ))}
-                  </List>
-                  <Divider sx={{ my: 1 }} />
-                  <Typography variant="body2">Selected GPUs: {Array.from(selectedSet).length} (点击卡片切换)</Typography>
-                </Paper>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', width: '100%' }}>
+                    {Array.from(selectedMetrics).map(metricKey => {
+                      const metric = metricsCatalog.find(m => m.key === metricKey);
+                      if (!metric) return null;
+                      
+                      return (
+                        <Card key={metricKey}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                            <Typography.Title level={5} style={{ margin: 0 }}>{metric.label}</Typography.Title>
+                            <Typography.Text type="secondary">单位: {metric.unit}</Typography.Text>
+                          </div>
 
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, width: '100%' }}>
-                  {Array.from(selectedMetrics).map(metricKey => {
-                    const metric = metricsCatalog.find(m => m.key === metricKey);
-                    if (!metric) return null;
-                    
-                    return (
-                      <Paper key={metricKey} sx={{ p: 2, width: '100%', display: 'flex', flexDirection: 'column' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <Typography variant="h6">{metric.label}</Typography>
-                          <Typography variant="caption">单位: {metric.unit}</Typography>
-                        </Box>
-
-                        <Box sx={{ mt: 1, height: 320, width: '100%', minWidth: 0, flex: '1 1 auto', display: 'flex' }}>
-                          {Array.from(selectedSet).length === 0 ? (
-                            <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
-                              <Typography color="text.secondary">Select GPUs (点击卡片) to show chart</Typography>
-                            </Box>
-                          ) : (
-                            <ResponsiveContainer width="100%" height="100%">
-                              <LineChart 
-                                data={chartDataMap[metricKey] || []}
-                                syncId={`gpu-chart-${metricKey}`}
-                              >
-                                <CartesianGrid strokeDasharray="3 3" />
-                                <XAxis 
-                                  dataKey="timeLabel" 
-                                  allowDataOverflow={true}
-                                  minTickGap={50}
-                                  interval="preserveStartEnd"
-                                />
-                                <YAxis 
-                                  unit={metric.unit}
-                                  allowDataOverflow={true}
-                                  domain={['auto', 'auto']}
-                                />
-                                <Tooltip 
-                                  isAnimationActive={false}
-                                  cursor={{ stroke: '#666', strokeWidth: 1 }}
-                                />
-                                <Legend />
-                                {Array.from(selectedSet).map((gpuIndex, si) => (
-                                  <Line 
-                                    key={gpuIndex} 
-                                    type="monotoneX" 
-                                    dataKey={`g${gpuIndex}`} 
-                                    name={`GPU ${gpuIndex}`} 
-                                    stroke={["#3b82f6","#10b981","#ef4444","#f97316","#7c3aed","#06b6d4"][si % 6]} 
-                                    strokeWidth={2}
-                                    dot={false}
-                                    isAnimationActive={true}
-                                    animationDuration={CHART_ANIMATION_DURATION}
-                                    animationEasing="ease-in-out"
+                          <div style={{ height: 320, width: '100%', minWidth: 0, flex: '1 1 auto', display: 'flex' }}>
+                            {Array.from(selectedSet).length === 0 ? (
+                              <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+                                <Typography.Text type="secondary">Select GPUs (点击卡片) to show chart</Typography.Text>
+                              </div>
+                            ) : (
+                              <ResponsiveContainer width="100%" height="100%">
+                                <LineChart 
+                                  data={chartDataMap[metricKey] || []}
+                                  syncId={`gpu-chart-${metricKey}`}
+                                >
+                                  <CartesianGrid strokeDasharray="3 3" />
+                                  <XAxis 
+                                    dataKey="timeLabel" 
+                                    allowDataOverflow={true}
+                                    minTickGap={50}
+                                    interval="preserveStartEnd"
                                   />
-                                ))}
-                              </LineChart>
-                            </ResponsiveContainer>
-                          )}
-                        </Box>
-                      </Paper>
-                    );
-                  })}
-                </Box>
-              </Box>
-            </Box>
+                                  <YAxis 
+                                    unit={metric.unit}
+                                    allowDataOverflow={true}
+                                    domain={['auto', 'auto']}
+                                  />
+                                  <Tooltip 
+                                    isAnimationActive={false}
+                                    cursor={{ stroke: '#666', strokeWidth: 1 }}
+                                  />
+                                  <Legend />
+                                  {Array.from(selectedSet).map((gpuIndex, si) => (
+                                    <Line 
+                                      key={gpuIndex} 
+                                      type="monotoneX" 
+                                      dataKey={`g${gpuIndex}`} 
+                                      name={`GPU ${gpuIndex}`} 
+                                      stroke={["#3b82f6","#10b981","#ef4444","#f97316","#7c3aed","#06b6d4"][si % 6]} 
+                                      strokeWidth={2}
+                                      dot={false}
+                                      isAnimationActive={true}
+                                      animationDuration={CHART_ANIMATION_DURATION}
+                                      animationEasing="ease-in-out"
+                                    />
+                                  ))}
+                                </LineChart>
+                              </ResponsiveContainer>
+                            )}
+                          </div>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
 
-            {/* Device info section removed */}
-          </>
-        ) : (
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="h6">Connecting to GPU Service...</Typography>
-            <Typography color="text.secondary">Establishing WebSocket connection...</Typography>
-          </Paper>
-        )}
-      </Box>
+              {/* Device info section removed */}
+            </>
+          ) : (
+            <Card>
+              <Typography.Title level={5}>Connecting to GPU Service...</Typography.Title>
+              <Typography.Text type="secondary">Establishing WebSocket connection...</Typography.Text>
+            </Card>
+          )}
+        </div>
 
-      <Box sx={{ mt: 2 }}>
-        <Paper sx={{ p: 1 }}>
-          <Typography variant="caption">Endpoint: <code>ws://localhost:8000/ws</code></Typography>
-          <Typography variant="caption" sx={{ display: 'block' }}>Status: {connectionStatus}{lastError ? ` • Error: ${lastError}` : ''}</Typography>
-          <Typography variant="caption" sx={{ display: 'block' }}>Last update: {gpuData ? new Date(gpuData.timestamp * 1000).toLocaleTimeString() : 'N/A'}</Typography>
-        </Paper>
-      </Box>
-    </Box>
+        <div style={{ marginTop: '16px' }}>
+          <Card size="small">
+            <Space direction="vertical" size="small">
+              <Typography.Text type="secondary">
+                Endpoint: <Typography.Text code>ws://localhost:8000/ws</Typography.Text>
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                Status: {connectionStatus}{lastError ? ` • Error: ${lastError}` : ''}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                Last update: {gpuData ? new Date(gpuData.timestamp * 1000).toLocaleTimeString() : 'N/A'}
+              </Typography.Text>
+            </Space>
+          </Card>
+        </div>
+      </Layout.Content>
+    </Layout>
   );
 }
