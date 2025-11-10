@@ -1,0 +1,9 @@
+* { box-sizing: border-box; }
+body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:#f7fafc; color:#0f172a; margin:0; padding:20px; }
+.container { max-width: 900px; margin: 0 auto; }
+header h1 { margin: 0 0 12px 0; font-size: 20px; }
+.card { background: white; padding: 16px; border-radius: 8px; box-shadow: 0 1px 2px rgba(2,6,23,0.05); margin-bottom: 12px; }
+.grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; }
+.sparkline { height:50px; }
+.muted { color: #6b7280; }
+footer.muted { font-size: 12px; color: #6b7280; margin-top: 8px; }

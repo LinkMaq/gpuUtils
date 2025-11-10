@@ -1,0 +1,9 @@
+node_modules
+.venv
+venv
+__pycache__
+.pytest_cache
+dist
+*.log
+Dockerfile
+docker-compose.yml
