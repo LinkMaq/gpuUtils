@@ -37,14 +37,32 @@ class GPUState:
         self.pcie_rx = 0.0  # GB/s
 
     def update(self):
-        # 模拟真实的GPU状态变化
-        # GPU利用率变化
-        target = random.choice([0, 30, 50, 80, 100])  # 模拟任务负载变化
+        # 根据GPU索引设置不同的行为模式
+        behavior = self.index % 4  # 将8个GPU分为4种不同的行为模式
+        
+        # GPU利用率变化 - 不同的行为模式
+        if behavior == 0:  # 高负载模式
+            target = random.choice([70, 80, 90, 100])
+        elif behavior == 1:  # 中等负载模式
+            target = random.choice([40, 50, 60])
+        elif behavior == 2:  # 低负载模式
+            target = random.choice([10, 20, 30])
+        else:  # 空闲模式
+            target = random.choice([0, 5, 10])
+            
         self.util = max(0, min(100, self.util + random.uniform(-10, 10) if abs(self.util - target) < 20 else (target - self.util) * 0.3))
         
-        # 显存使用变化
+        # 显存使用变化 - 根据行为模式调整
         if random.random() < 0.1:  # 10%概率发生显存变化
-            self.memory_used = max(0, min(self.memory_total, self.memory_used + random.randint(-1024, 1024)))
+            if behavior == 0:  # 高内存使用
+                self.memory_used = max(12288, min(self.memory_total, self.memory_used + random.randint(-512, 1024)))
+            elif behavior == 1:  # 中等内存使用
+                self.memory_used = max(8192, min(12288, self.memory_used + random.randint(-512, 512)))
+            elif behavior == 2:  # 低内存使用
+                self.memory_used = max(2048, min(8192, self.memory_used + random.randint(-256, 256)))
+            else:  # 最小内存使用
+                self.memory_used = max(0, min(2048, self.memory_used + random.randint(-128, 128)))
+                
         self.mem_util = (self.memory_used / self.memory_total) * 100
 
         # 温度变化
@@ -76,7 +94,7 @@ class GPUState:
         self.pcie_tx = max(0.0, (self.util / 100) * 50 + random.uniform(-2, 2))
         self.pcie_rx = max(0.0, (self.util / 100) * 50 + random.uniform(-2, 2))
 
-gpu_states = {i: GPUState(i) for i in range(4)}  # 模拟4个GPU
+gpu_states = {i: GPUState(i) for i in range(8)}  # 模拟8个GPU
 
 def make_mock_metrics(gpu_index: int = 0) -> Dict:
     now = time.time()
@@ -119,7 +137,7 @@ async def websocket_endpoint(websocket: WebSocket):
         # simple loop sending mocked metrics for all GPUs until client disconnects
         while True:
             # 发送所有GPU的数据
-            metrics_list = [make_mock_metrics(gpu_index=i) for i in range(4)]
+            metrics_list = [make_mock_metrics(gpu_index=i) for i in range(8)]
             await websocket.send_json({
                 "timestamp": time.time(),
                 "gpus": metrics_list

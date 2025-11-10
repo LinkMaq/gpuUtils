@@ -1,9 +1,9 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import AppBar from '@mui/material/AppBar';
 import Toolbar from '@mui/material/Toolbar';
 import Typography from '@mui/material/Typography';
 import Box from '@mui/material/Box';
-import Grid from '@mui/material/Grid';
+
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Button from '@mui/material/Button';
@@ -30,11 +30,13 @@ const getUtilColor = (util) => {
 export default function App() {
   const [gpuData, setGpuData] = useState(null);
   const [history, setHistory] = useState({});
-  const [chartData, setChartData] = useState([]);
-  const CHART_MAX = 120;
-  const CHART_STEP_SEC = 1; // fixed timeline step (seconds)
-  const TOLERANCE_SEC = 1.5; // nearest-sample tolerance in seconds
-  const [selectedGpu, setSelectedGpu] = useState(0);
+  const [chartDataMap, setChartDataMap] = useState({});
+  const CHART_MAX = 120; // 保持最近120个数据点  
+  const CHART_STEP_SEC = 1; // 固定时间步长(秒)
+  const TOLERANCE_SEC = 0.5; // 数据采样容差(秒)
+  const CHART_ANIMATION_DURATION = 300; // 图表动画持续时间(毫秒)
+  const UPDATE_INTERVAL = 1000; // 图表更新间隔(毫秒)
+
   const [selectedSet, setSelectedSet] = useState(new Set());
   const selectedSetRef = useRef(selectedSet);
   const [connectionStatus, setConnectionStatus] = useState('idle'); // idle, connecting, open, closed, error
@@ -69,7 +71,9 @@ export default function App() {
   const [selectedMetrics, setSelectedMetrics] = useState(new Set(['gpu_util']));
   const [activeMetric, setActiveMetric] = useState('gpu_util');
 
+  const selectedMetricsRef = useRef(selectedMetrics);
   const activeMetricRef = useRef(activeMetric);
+  const historyRef = useRef(history);
 
   // keep activeMetric in sync with selectedMetrics
   useEffect(() => {
@@ -80,7 +84,9 @@ export default function App() {
 
   // keep refs in sync so websocket handlers can read latest selection
   useEffect(() => { selectedSetRef.current = selectedSet; }, [selectedSet]);
+  useEffect(() => { selectedMetricsRef.current = selectedMetrics; }, [selectedMetrics]);
   useEffect(() => { activeMetricRef.current = activeMetric; }, [activeMetric]);
+  useEffect(() => { historyRef.current = history; }, [history]);
 
   // helper: find nearest sample in history array to given timestamp
   const findNearest = (arr, ts) => {
@@ -150,30 +156,42 @@ export default function App() {
                 if (next[gpu.gpu_index].length > 60) next[gpu.gpu_index].shift();
               });
 
-              // incrementally append to chartData using the incoming payload and current selection
-              try {
-                const sel = Array.from(selectedSetRef.current || []);
-                const metricKey = activeMetricRef.current;
-                if (sel.length > 0 && metricKey) {
-                  const metricDef = metricsCatalog.find(m => m.key === metricKey) || metricsCatalog[0];
-                  // align to fixed timeline tick
-                  const tick = Math.round(data.timestamp / CHART_STEP_SEC) * CHART_STEP_SEC;
-                  const newPoint = buildPoint(tick, sel, metricDef, next, data.gpus);
-                  setChartData(prevChart => {
-                    if (prevChart.length && prevChart[prevChart.length - 1].time === newPoint.time) {
-                      // replace last point with refreshed values for same tick
-                      const copy = prevChart.slice();
-                      copy[copy.length - 1] = newPoint;
-                      return copy;
-                    }
-                    return [...prevChart, newPoint].slice(-CHART_MAX);
-                  });
-                }
-              } catch (e) {
-                console.warn('chart append error', e);
-              }
+                // 为每个选中的监控项分别更新图表数据
+                try {
+                  const sel = Array.from(selectedSetRef.current || []);
+                  if (sel.length > 0) {
+                    const currentTime = data.timestamp;
+                    const tick = Math.floor(currentTime / CHART_STEP_SEC) * CHART_STEP_SEC;
 
-              return next;
+                    setChartDataMap(prevChartDataMap => {
+                      const newChartDataMap = { ...prevChartDataMap };
+
+                      // 为每个监控指标更新数据
+                      metricsCatalog.forEach(metricDef => {
+                        if (!selectedMetricsRef.current.has(metricDef.key)) return;
+
+                        const newPoint = buildPoint(tick, sel, metricDef, next, data.gpus);
+                        const currentChart = newChartDataMap[metricDef.key] || [];
+                        
+                        // 检查是否需要更新最后一个点或添加新点
+                        const lastPoint = currentChart[currentChart.length - 1];
+                        if (lastPoint && Math.abs(lastPoint.time/1000 - tick) < TOLERANCE_SEC) {
+                          // 更新最后一个点的数据
+                          const updatedChart = [...currentChart];
+                          updatedChart[updatedChart.length - 1] = newPoint;
+                          newChartDataMap[metricDef.key] = updatedChart;
+                        } else {
+                          // 添加新点并保持固定窗口大小
+                          newChartDataMap[metricDef.key] = [...currentChart, newPoint].slice(-CHART_MAX);
+                        }
+                      });
+
+                      return newChartDataMap;
+                    });
+                  }
+                } catch (e) {
+                  console.warn('chart append error', e);
+                }              return next;
             });
           } catch (e) {
             console.warn('invalid ws msg', e);
@@ -215,25 +233,36 @@ export default function App() {
     };
   }, [endpoint, running]);
 
-  // rebuild chartData when selection or active metric changes (re-align using fixed ticks)
+  // rebuild chartData when selection changes (re-align using fixed ticks)
+  // initialize chart data for all selected metrics
   useEffect(() => {
     const sel = Array.from(selectedSet);
-    const metricKey = activeMetric;
-    if (!sel.length || !metricKey) {
-      setChartData([]);
+    if (!sel.length) {
+      setChartDataMap({});
       return;
     }
-    const metricDef = metricsCatalog.find(m => m.key === metricKey) || metricsCatalog[0];
-    // gather union of timestamps from histories and round to step
+    
+    // gather union of timestamps from histories
+    const hist = historyRef.current || {};
     const allT = new Set();
-    sel.forEach(idx => (history[idx] || []).forEach(d => {
+    sel.forEach(idx => (hist[idx] || []).forEach(d => {
       const t = Math.round(d.timestamp / CHART_STEP_SEC) * CHART_STEP_SEC;
       allT.add(t);
     }));
     const times = Array.from(allT).sort();
-    const next = times.map(t => buildPoint(t, sel, metricDef, history, null));
-    setChartData(next.slice(-CHART_MAX));
-  }, [selectedSet, activeMetric, history]);
+    
+    // initialize data for all selected metrics
+    const newChartDataMap = {};
+    selectedMetricsRef.current.forEach(metricKey => {
+      const metricDef = metricsCatalog.find(m => m.key === metricKey);
+      if (!metricDef) return;
+      
+      const next = times.map(t => buildPoint(t, sel, metricDef, hist, null));
+      newChartDataMap[metricKey] = next.slice(-CHART_MAX);
+    });
+    
+    setChartDataMap(newChartDataMap);
+  }, [selectedSet, activeMetric]);
 
   return (
     <Box sx={{ flexGrow: 1, p: 2 }}>
@@ -250,13 +279,12 @@ export default function App() {
                 if ((selectedSet?.size || 0) === 0) {
                   const s = new Set([0]);
                   setSelectedSet(s);
-                  setSelectedGpu(0);
                 }
               }
               return next;
             });
           }}>{running ? 'Stop' : 'Start'}</Button>
-          <Button sx={{ ml: 1 }} color="secondary" variant="outlined" onClick={() => { setSelectedSet(new Set()); setGpuData(null); setHistory({}); setChartData([]); }}>Reset</Button>
+          <Button sx={{ ml: 1 }} color="secondary" variant="outlined" onClick={() => { setSelectedSet(new Set()); setGpuData(null); setHistory({}); setChartDataMap({}); }}>Reset</Button>
         </Toolbar>
       </AppBar>
 
@@ -283,7 +311,13 @@ export default function App() {
       <Box sx={{ mt: 2 }}>
         {gpuData ? (
           <>
-            <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 2 }}>
+            <Box sx={{ 
+                display: 'grid', 
+                gridTemplateColumns: 'repeat(8, 1fr)', 
+                gap: 2,
+                overflowX: 'auto',
+                '& > *': { minWidth: '260px' }
+              }}>
               {gpuData.gpus.map((gpu) => (
                 <Box key={gpu.gpu_index} sx={{ position: 'relative' }}>
                   <Card variant="outlined" onClick={() => {
@@ -292,13 +326,13 @@ export default function App() {
                     if (s.has(gpu.gpu_index)) s.delete(gpu.gpu_index);
                     else s.add(gpu.gpu_index);
                     setSelectedSet(s);
-                    setSelectedGpu(gpu.gpu_index);
-                  }} sx={{ cursor: 'pointer' }}>
+
+                  }} sx={{ 
+                    cursor: 'pointer',
+                    backgroundColor: selectedSet.has(gpu.gpu_index) ? '#f3f4f6' : 'white',
+                    transition: 'background-color 0.2s ease'
+                  }}>
                     <CardContent>
-                      {/* selection feedback */}
-                      {selectedSet.has(gpu.gpu_index) && (
-                        <Chip label="Selected" size="small" color="primary" sx={{ position: 'absolute', right: 8, top: 8 }} />
-                      )}
                       <Typography variant="subtitle1">{gpu.name}</Typography>
                       <Box sx={{ mt: 1 }}>
                         <Box sx={{ height: 8, bgcolor: '#e5e7eb', borderRadius: 1, overflow: 'hidden' }}>
@@ -340,80 +374,72 @@ export default function App() {
                   <Typography variant="body2">Selected GPUs: {Array.from(selectedSet).length} (点击卡片切换)</Typography>
                 </Paper>
 
-                <Paper sx={{ p: 2, width: '100%', display: 'flex', flexDirection: 'column' }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Typography variant="h6">Realtime Chart</Typography>
-                    <Box>
-                      <Typography variant="caption" sx={{ mr: 1 }}>Metric:</Typography>
-                      {selectedMetrics.size === 0 ? (
-                        <Typography variant="caption" color="text.secondary">Select a metric</Typography>
-                      ) : (
-                        <select value={activeMetric || ''} onChange={(e) => setActiveMetric(e.target.value)}>
-                          {[...selectedMetrics].map(k => {
-                            const m = metricsCatalog.find(x => x.key === k);
-                            return m ? <option value={m.key} key={m.key}>{m.label} ({m.unit})</option> : null;
-                          })}
-                        </select>
-                      )}
-                    </Box>
-                  </Box>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, width: '100%' }}>
+                  {Array.from(selectedMetrics).map(metricKey => {
+                    const metric = metricsCatalog.find(m => m.key === metricKey);
+                    if (!metric) return null;
+                    
+                    return (
+                      <Paper key={metricKey} sx={{ p: 2, width: '100%', display: 'flex', flexDirection: 'column' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <Typography variant="h6">{metric.label}</Typography>
+                          <Typography variant="caption">单位: {metric.unit}</Typography>
+                        </Box>
 
-                  <Box sx={{ mt: 1, height: 320, width: '100%', minWidth: 0, flex: '1 1 auto', display: 'flex' }}>
-                    {Array.from(selectedSet).length === 0 && <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}><Typography color="text.secondary">Select GPUs (点击卡片) to show chart</Typography></Box>}
-                    {Array.from(selectedSet).length > 0 && activeMetric && (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={chartData}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="timeLabel" />
-                          <YAxis unit={metricsCatalog.find(m => m.key === activeMetric)?.unit} />
-                          <Tooltip />
-                          <Legend />
-                          {Array.from(selectedSet).map((gpuIndex, si) => (
-                            <Line key={gpuIndex} type="monotone" dataKey={`g${gpuIndex}`} name={`GPU ${gpuIndex}`} stroke={["#3b82f6","#10b981","#ef4444","#f97316","#7c3aed","#06b6d4"][si % 6]} dot={false} />
-                          ))}
-                        </LineChart>
-                      </ResponsiveContainer>
-                    )}
-                  </Box>
-                  <Typography variant="caption">Y unit: {activeMetric ? (metricsCatalog.find(m => m.key === activeMetric)?.unit) : '-'}</Typography>
-                </Paper>
+                        <Box sx={{ mt: 1, height: 320, width: '100%', minWidth: 0, flex: '1 1 auto', display: 'flex' }}>
+                          {Array.from(selectedSet).length === 0 ? (
+                            <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+                              <Typography color="text.secondary">Select GPUs (点击卡片) to show chart</Typography>
+                            </Box>
+                          ) : (
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart 
+                                data={chartDataMap[metricKey] || []}
+                                syncId={`gpu-chart-${metricKey}`}
+                              >
+                                <CartesianGrid strokeDasharray="3 3" />
+                                <XAxis 
+                                  dataKey="timeLabel" 
+                                  allowDataOverflow={true}
+                                  minTickGap={50}
+                                  interval="preserveStartEnd"
+                                />
+                                <YAxis 
+                                  unit={metric.unit}
+                                  allowDataOverflow={true}
+                                  domain={['auto', 'auto']}
+                                />
+                                <Tooltip 
+                                  isAnimationActive={false}
+                                  cursor={{ stroke: '#666', strokeWidth: 1 }}
+                                />
+                                <Legend />
+                                {Array.from(selectedSet).map((gpuIndex, si) => (
+                                  <Line 
+                                    key={gpuIndex} 
+                                    type="monotoneX" 
+                                    dataKey={`g${gpuIndex}`} 
+                                    name={`GPU ${gpuIndex}`} 
+                                    stroke={["#3b82f6","#10b981","#ef4444","#f97316","#7c3aed","#06b6d4"][si % 6]} 
+                                    strokeWidth={2}
+                                    dot={false}
+                                    isAnimationActive={true}
+                                    animationDuration={CHART_ANIMATION_DURATION}
+                                    animationEasing="ease-in-out"
+                                  />
+                                ))}
+                              </LineChart>
+                            </ResponsiveContainer>
+                          )}
+                        </Box>
+                      </Paper>
+                    );
+                  })}
+                </Box>
               </Box>
             </Box>
 
-            {/* Detailed stats for selected GPU */}
-            {gpuData.gpus[selectedGpu] && (
-              <Box sx={{ mt: 2 }}>
-                <Card>
-                          <CardContent>
-                            <Typography variant="h6">Device Info - {gpuData.gpus[selectedGpu].name}</Typography>
-                            <Grid container spacing={2} sx={{ mt: 1 }}>
-                              <Grid item xs={12} md={4}>
-                                <Paper sx={{ p: 2 }}>
-                                  <Typography variant="subtitle2">Identity</Typography>
-                                  <div>GPU ID: {gpuData.gpus[selectedGpu].gpu_index}</div>
-                                  <div>Model: {gpuData.gpus[selectedGpu].name}</div>
-                                </Paper>
-                              </Grid>
-                              <Grid item xs={12} md={4}>
-                                <Paper sx={{ p: 2 }}>
-                                  <Typography variant="subtitle2">Memory / Clocks</Typography>
-                                  <div>Total Memory: {gpuData.gpus[selectedGpu].memory?.total ?? 'N/A'} MB</div>
-                                  <div>Graphics Clock: {gpuData.gpus[selectedGpu].clocks?.graphics ?? 'N/A'} MHz</div>
-                                  <div>Memory Clock: {gpuData.gpus[selectedGpu].clocks?.memory ?? 'N/A'} MHz</div>
-                                </Paper>
-                              </Grid>
-                              <Grid item xs={12} md={4}>
-                                <Paper sx={{ p: 2 }}>
-                                  <Typography variant="subtitle2">Static Status</Typography>
-                                  <div>Performance State: {gpuData.gpus[selectedGpu].performance_state}</div>
-                                  <div>PCIe / NvLink: see metrics</div>
-                                </Paper>
-                              </Grid>
-                            </Grid>
-                          </CardContent>
-                </Card>
-              </Box>
-            )}
+            {/* Device info section removed */}
           </>
         ) : (
           <Paper sx={{ p: 2 }}>
